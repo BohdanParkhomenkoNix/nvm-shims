@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# nvm-shims: run node, npm or npx from the nvm version chosen for the current directory.
+# Order: .nvmrc found from $PWD upward, then $NVM_BIN of the calling shell, then nvm's default alias.
+# https://github.com/BohdanParkhomenkoNix/nvm-shims
+set -u
+
+tool=${0##*/}
+nvm_dir=${NVM_DIR:-$HOME/.nvm}
+versions=$nvm_dir/versions/node
+
+fail() {
+  echo "nvm-shims: $*" >&2
+  exit 127
+}
+
+# First non-empty line of a file, with # comments and all whitespace (CR included) removed.
+read_spec() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%#*}
+    line=${line//[[:space:]]/}
+    if [ -n "$line" ]; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+  done <"$1"
+  return 1
+}
+
+find_nvmrc() {
+  local dir=$PWD
+  while :; do
+    if [ -f "$dir/.nvmrc" ]; then
+      printf '%s\n' "$dir/.nvmrc"
+      return 0
+    fi
+    if [ -z "$dir" ] || [ "$dir" = / ]; then
+      return 1
+    fi
+    dir=${dir%/*}
+  done
+}
+
+# Highest installed vX.Y.Z whose number is $1 or starts with "$1."; an empty $1 matches every version.
+highest() {
+  local prefix=$1 path name key best="" best_key=""
+  for path in "$versions"/v*; do
+    [ -d "$path" ] || continue
+    name=${path##*/}
+    [[ $name =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || continue
+    if [ -n "$prefix" ]; then
+      case ${name#v} in
+        "$prefix" | "$prefix".*) ;;
+        *) continue ;;
+      esac
+    fi
+    key=$(printf '%06d%06d%06d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+    if [[ $key > $best_key ]]; then
+      best=$name
+      best_key=$key
+    fi
+  done
+  [ -n "$best" ] || return 1
+  printf '%s\n' "$best"
+}
+
+# Anything the files cannot answer: ask nvm itself, in a subshell.
+from_nvm() {
+  local v
+  [ -s "$nvm_dir/nvm.sh" ] || return 1
+  v=$(
+    set +u # nvm.sh is not written for set -u
+    export NVM_DIR="$nvm_dir"
+    # shellcheck disable=SC1091
+    . "$nvm_dir/nvm.sh" --no-use >/dev/null 2>&1
+    nvm version "$1" 2>/dev/null
+  ) || return 1
+  if [ -z "$v" ] || [ ! -d "$versions/$v" ]; then
+    return 1
+  fi
+  printf '%s\n' "$v"
+}
+
+# nvm version spec -> installed directory name (vX.Y.Z). Alias files are followed, at most 5 hops.
+resolve() {
+  local spec=$1 hops=${2:-0} target
+  [ "$hops" -le 5 ] || return 1
+  case $spec in
+    *..*) return 1 ;;
+  esac
+  if [ -f "$nvm_dir/alias/$spec" ]; then
+    target=$(read_spec "$nvm_dir/alias/$spec") || return 1
+    resolve "$target" $((hops + 1))
+    return
+  fi
+  spec=${spec#v}
+  case $spec in
+    node | stable) spec="" ;;
+  esac
+  if [ -z "$spec" ] || [[ $spec =~ ^[0-9]+(\.[0-9]+)?(\.[0-9]+)?$ ]]; then
+    highest "$spec"
+    return
+  fi
+  from_nvm "$spec"
+}
+
+# The version of $NVM_BIN, only if it is exactly $versions/<v>/bin and holds the tool.
+nvm_bin_version() {
+  local v
+  case ${NVM_BIN:-} in
+    "$versions"/*/bin) ;;
+    *) return 1 ;;
+  esac
+  v=${NVM_BIN#"$versions"/}
+  v=${v%/bin}
+  case $v in
+    "" | */*) return 1 ;;
+  esac
+  [ -x "$NVM_BIN/$tool" ] || return 1
+  printf '%s\n' "$v"
+}
+
+if nvmrc=$(find_nvmrc); then
+  spec=$(read_spec "$nvmrc") || fail "$nvmrc is empty"
+  version=$(resolve "$spec") || fail "node $spec from $nvmrc is not installed: nvm install $spec"
+elif version=$(nvm_bin_version); then
+  :
+else
+  [ -f "$nvm_dir/alias/default" ] || fail "no .nvmrc here and no nvm default alias: nvm alias default <version>"
+  spec=$(read_spec "$nvm_dir/alias/default") || fail "$nvm_dir/alias/default is empty"
+  version=$(resolve default) || fail "node $spec from $nvm_dir/alias/default is not installed: nvm install $spec"
+fi
+
+target=$versions/$version/bin/$tool
+[ -x "$target" ] || fail "node $version has no $tool"
+exec "$target" "$@"
