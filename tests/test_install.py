@@ -1,5 +1,6 @@
 """Tests for install.sh against temp directories."""
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -85,9 +86,45 @@ class InstallTest(unittest.TestCase):
         self.assertIn("OK: %s/node is the first node on PATH" % self.dir, result.stdout)
 
     def test_reports_path_order_note(self):
+        other = os.path.join(self.tmp, "other")
+        os.makedirs(other)
+        with open(os.path.join(other, "node"), "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(os.path.join(other, "node"), 0o755)
+        result = self.run_install(path="%s:%s:/usr/bin:/bin" % (other, self.dir))
+        self.assertIn("NOTE: %s/node comes before %s/node on PATH" % (other, self.dir), result.stdout)
+
+    def test_reports_dir_not_on_path(self):
         result = self.run_install()
-        self.assertIn("NOTE: ", result.stdout)
-        self.assertIn("comes before %s/node on PATH" % self.dir, result.stdout)
+        self.assertIn("NOTE: %s is not on PATH; add it to PATH, after nvm is loaded" % self.dir, result.stdout)
+        self.assertNotIn("comes before", result.stdout)
+
+    def test_dir_matches_whole_path_entries_only(self):
+        result = self.run_install(path=self.dir + "-x:/usr/bin:/bin")
+        self.assertIn("is not on PATH", result.stdout)
+
+    def test_no_argument_and_no_home_fails(self):
+        result = subprocess.run([INSTALL], env={"PATH": "/usr/bin:/bin"},
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stderr.startswith("nvm-shims: "), result.stderr)
+
+    def test_repo_bin_is_refused_as_dir(self):
+        # A copy of the repository, so the real bin/ is never touched.
+        copy = os.path.join(self.tmp, "copy")
+        os.makedirs(os.path.join(copy, "bin"))
+        for name in ("install.sh", "nvm-shim"):
+            shutil.copy2(os.path.join(REPO, name), os.path.join(copy, name))
+        for tool in TOOLS:
+            os.symlink("../nvm-shim", os.path.join(copy, "bin", tool))
+        result = subprocess.run(
+            [os.path.join(copy, "install.sh"), os.path.join(copy, "bin")],
+            env={"PATH": "/usr/bin:/bin", "HOME": self.tmp}, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stderr.startswith("nvm-shims: "), result.stderr)
+        for tool in TOOLS:
+            self.assertEqual(os.readlink(os.path.join(copy, "bin", tool)), "../nvm-shim")
 
 
 if __name__ == "__main__":

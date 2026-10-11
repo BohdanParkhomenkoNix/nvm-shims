@@ -19,6 +19,8 @@ class DocsTest(unittest.TestCase):
             "`$NVM_BIN`",
             "nvm alias default",
             "is not installed: nvm install",
+            "`NVM_DIR` defaults to `~/.nvm`",
+            "fnm switches versions per shell",
             "load-nvmrc",
             "NVM_BIN:h:t",
             "nvshim",

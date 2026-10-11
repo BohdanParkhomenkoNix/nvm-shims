@@ -48,6 +48,7 @@ class ShimTestCase(unittest.TestCase):
     def run_shim(self, tool="node", args=(), cwd=None, env=None):
         full_env = {"PATH": "/usr/bin:/bin", "HOME": self.tmp, "NVM_DIR": self.nvm}
         full_env.update(env or {})
+        full_env = {k: v for k, v in full_env.items() if v is not None}  # None unsets a variable
         return subprocess.run(
             [os.path.join(self.shims, tool), *args],
             cwd=cwd or self.project, env=full_env,
@@ -99,8 +100,8 @@ class NvmrcTest(ShimTestCase):
         self.assertEqual(result.returncode, 127)
         self.assertEqual(
             result.stderr.strip(),
-            "nvm-shims: node 18 from %s is not installed: nvm install 18"
-            % os.path.join(self.project, ".nvmrc"),
+            "nvm-shims: node 18 from %s is not installed: nvm install 18 (NVM_DIR=%s)"
+            % (os.path.join(self.project, ".nvmrc"), self.nvm),
         )
 
     def test_empty_nvmrc(self):
@@ -112,7 +113,26 @@ class NvmrcTest(ShimTestCase):
 
     def test_dotdot_spec_rejected(self):
         self.nvmrc("../../versions/node/v22.23.2\n")
-        self.assertEqual(self.run_shim().returncode, 127)
+        result = self.run_shim()
+        self.assertEqual(result.returncode, 127)
+        self.assertTrue(result.stderr.startswith("nvm-shims: "), result.stderr)
+
+    def test_key_value_lines_are_skipped(self):
+        self.nvmrc("foo=bar\n22\n")
+        self.assertRuns(self.run_shim(), "node v22.23.2")
+
+    def test_unreadable_nvmrc_fails_with_message(self):
+        if os.geteuid() == 0:
+            self.skipTest("root can read any file")
+        self.nvmrc("22\n")
+        path = os.path.join(self.project, ".nvmrc")
+        os.chmod(path, 0o000)
+        try:
+            result = self.run_shim()
+        finally:
+            os.chmod(path, 0o644)
+        self.assertEqual(result.returncode, 127)
+        self.assertEqual(result.stderr.strip(), "nvm-shims: cannot read %s" % path)
 
 
 class VersionMatchTest(ShimTestCase):
@@ -157,12 +177,22 @@ class AliasTest(ShimTestCase):
         self.alias("a", "b")
         self.alias("b", "a")
         self.nvmrc("a\n")
-        self.assertEqual(self.run_shim().returncode, 127)
+        result = self.run_shim()
+        self.assertEqual(result.returncode, 127)
+        self.assertTrue(result.stderr.startswith("nvm-shims: "), result.stderr)
 
     def test_no_default_alias(self):
         result = self.run_shim()
         self.assertEqual(result.returncode, 127)
         self.assertIn("nvm alias default", result.stderr)
+        self.assertIn("NVM_DIR=%s" % self.nvm, result.stderr)
+
+    def test_default_alias_not_installed_names_nvm_dir(self):
+        self.alias("default", "18")
+        result = self.run_shim()
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("is not installed: nvm install 18", result.stderr)
+        self.assertIn("NVM_DIR=%s" % self.nvm, result.stderr)
 
 
 class NvmBinTest(ShimTestCase):
@@ -201,6 +231,34 @@ class ExecTest(ShimTestCase):
     def test_no_args(self):
         self.assertRuns(self.run_shim(), "node v20.20.0")
 
+    def write_env_node_npx(self):
+        path = os.path.join(self.nvm, "versions", "node", "v20.20.0", "bin", "npx")
+        with open(path, "w") as f:
+            f.write("#!/usr/bin/env node\n")
+
+    def test_npx_finds_node_when_shim_dir_is_not_on_path(self):
+        self.write_env_node_npx()
+        self.assertRuns(self.run_shim("npx"), "node v20.20.0 %s" % os.path.join(
+            self.nvm, "versions", "node", "v20.20.0", "bin", "npx"))
+
+    def test_npx_finds_node_through_relative_shim_path(self):
+        self.write_env_node_npx()
+        result = subprocess.run(
+            ["./npx"], cwd=self.shims,
+            env={"PATH": "/usr/bin:/bin", "HOME": self.tmp, "NVM_DIR": self.nvm},
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("node v20.20.0 "), result.stdout)
+
+
+class EnvironmentTest(ShimTestCase):
+    def test_neither_nvm_dir_nor_home(self):
+        for value in (None, ""):
+            result = self.run_shim(env={"NVM_DIR": value, "HOME": value})
+            self.assertEqual(result.returncode, 127, result.stderr)
+            self.assertEqual(result.stderr.strip(), "nvm-shims: neither NVM_DIR nor HOME is set")
+
 
 class SpacesTest(ShimTestCase):
     root_prefix = "nvm-shims test "
@@ -234,7 +292,9 @@ class NvmShFallbackTest(ShimTestCase):
 
     def test_nvm_answer_not_installed(self):
         self.nvmrc("gone\n")
-        self.assertEqual(self.run_shim().returncode, 127)
+        result = self.run_shim()
+        self.assertEqual(result.returncode, 127)
+        self.assertTrue(result.stderr.startswith("nvm-shims: "), result.stderr)
 
 
 if __name__ == "__main__":

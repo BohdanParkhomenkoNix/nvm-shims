@@ -5,20 +5,26 @@
 set -u
 
 tool=${0##*/}
-nvm_dir=${NVM_DIR:-$HOME/.nvm}
-versions=$nvm_dir/versions/node
 
 fail() {
   echo "nvm-shims: $*" >&2
   exit 127
 }
 
+[ -n "${NVM_DIR:-}${HOME:-}" ] || fail "neither NVM_DIR nor HOME is set"
+nvm_dir=${NVM_DIR:-$HOME/.nvm}
+versions=$nvm_dir/versions/node
+
 # First non-empty line of a file, with # comments and all whitespace (CR included) removed.
+# key=value lines are skipped, as nvm does.
 read_spec() {
   local line
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%%#*}
     line=${line//[[:space:]]/}
+    case $line in
+      *=*) continue ;;
+    esac
     if [ -n "$line" ]; then
       printf '%s\n' "$line"
       return 0
@@ -120,17 +126,45 @@ nvm_bin_version() {
   printf '%s\n' "$v"
 }
 
+# The absolute directory this shim was called from, symlinks not resolved.
+shim_dir() {
+  local d
+  case $0 in
+    */*) d=${0%/*} ;;
+    *) d=. ;;
+  esac
+  d=${d:-/}
+  case $d in
+    /*) printf '%s\n' "$d" ;;
+    *) (cd "$d" 2>/dev/null && pwd) ;;
+  esac
+}
+
 if nvmrc=$(find_nvmrc); then
+  [ -r "$nvmrc" ] || fail "cannot read $nvmrc"
   spec=$(read_spec "$nvmrc") || fail "$nvmrc is empty"
-  version=$(resolve "$spec") || fail "node $spec from $nvmrc is not installed: nvm install $spec"
+  version=$(resolve "$spec") || fail "node $spec from $nvmrc is not installed: nvm install $spec (NVM_DIR=$nvm_dir)"
 elif version=$(nvm_bin_version); then
   :
 else
-  [ -f "$nvm_dir/alias/default" ] || fail "no .nvmrc here and no nvm default alias: nvm alias default <version>"
+  [ -f "$nvm_dir/alias/default" ] || fail "no .nvmrc here and no nvm default alias: nvm alias default <version> (NVM_DIR=$nvm_dir)"
   spec=$(read_spec "$nvm_dir/alias/default") || fail "$nvm_dir/alias/default is empty"
-  version=$(resolve default) || fail "node $spec from $nvm_dir/alias/default is not installed: nvm install $spec"
+  version=$(resolve default) || fail "node $spec from $nvm_dir/alias/default is not installed: nvm install $spec (NVM_DIR=$nvm_dir)"
 fi
 
 target=$versions/$version/bin/$tool
 [ -x "$target" ] || fail "node $version has no $tool"
+
+# npm, npx and package bins start with "#!/usr/bin/env node": keep this shim's directory on PATH
+# so that child node calls go through the shim even when the caller's PATH lacks it.
+self_dir=$(shim_dir)
+if [ -n "$self_dir" ]; then
+  case ":${PATH:-}:" in
+    *":$self_dir:"*) ;;
+    *)
+      PATH=$self_dir${PATH:+:$PATH}
+      export PATH
+      ;;
+  esac
+fi
 exec "$target" "$@"

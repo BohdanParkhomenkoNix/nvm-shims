@@ -19,8 +19,10 @@ aliases by reading nvm's alias files. For anything else it asks `nvm version` in
 installs anything. A missing version is an error:
 
 ```
-nvm-shims: node 18 from /path/to/project/.nvmrc is not installed: nvm install 18
+nvm-shims: node 18 from /path/to/project/.nvmrc is not installed: nvm install 18 (NVM_DIR=/Users/you/.nvm)
 ```
+
+`NVM_DIR` defaults to `~/.nvm`; set it in the service environment if your nvm lives elsewhere.
 
 ## Install
 
@@ -32,7 +34,11 @@ cd ~/Projects/nvm-shims
 ```
 
 `install.sh` refuses to overwrite a regular file, and replaces an existing symlink. At the end it says
-whether the shims are first on your `PATH`.
+whether the shims are first on your `PATH`, or that the directory is not on `PATH` at all.
+
+The shim puts its own directory on the `PATH` of the process it starts, so `npx` and package bins
+(`#!/usr/bin/env node`) find the shimmed `node` even when you call `/Users/you/.local/bin/npx` by
+absolute path.
 
 **PATH order matters.** Services and GUI apps need the directory on their own `PATH`. `~/.local/bin`
 is a common choice, and for a launchd agent or a systemd unit you set `PATH` there. In your shell, put
@@ -83,7 +89,7 @@ load-nvmrc() {
   `nvm`, and wants you to stop sourcing `nvm.sh` in your shell. Every call goes through `nvm exec`.
 - [bozdoz/nevermind](https://pkg.go.dev/github.com/bozdoz/nevermind/nvm-shim): a Go binary that also
   shims globally installed npm binaries.
-- volta, fnm and mise have shims built in, if you are willing to replace nvm.
+- volta and mise have shims built in; fnm switches versions per shell. All of them replace nvm.
 
 nvm-shims keeps nvm exactly as it is and adds one dependency-free script.
 
