@@ -85,7 +85,7 @@ rc file **after** `nvm.sh` is sourced.
 zsh:
 
 ```zsh
-functions -c nvm_ls_current _nvm_ls_current_orig
+[[ ${functions[nvm_ls_current]} == *_nvm_ls_current_orig* ]] || functions -c nvm_ls_current _nvm_ls_current_orig
 nvm_ls_current() {
   if [ -n "${NVM_BIN-}" ] && [ -x "$NVM_BIN/node" ]; then
     print -r -- "${NVM_BIN:h:t}"
@@ -98,7 +98,7 @@ nvm_ls_current() {
 bash (3.2 or newer; there is no `functions -c`, so the original is copied with `declare -f`):
 
 ```bash
-eval "_nvm_ls_current_orig() $(declare -f nvm_ls_current | tail -n +2)"
+declare -f nvm_ls_current | grep -q _nvm_ls_current_orig || eval "_nvm_ls_current_orig() $(declare -f nvm_ls_current | tail -n +2)"
 nvm_ls_current() {
   local v
   if [ -n "${NVM_BIN-}" ] && [ -x "$NVM_BIN/node" ]; then
@@ -109,6 +109,9 @@ nvm_ls_current() {
   fi
 }
 ```
+
+Both snippets are safe to run twice (for example when the rc file is sourced again): the first line
+copies the original only if it is not wrapped yet.
 
 After `nvm use 20`, `nvm current` prints `v20.20.0` instead of `system`. Without `$NVM_BIN` it falls back to
 nvm's own answer.
