@@ -1,5 +1,6 @@
 """Tests for nvm-shim, run through symlinks against a fake NVM_DIR."""
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ class ShimTestCase(unittest.TestCase):
     def setUp(self):
         # realpath: on macOS the temp dir sits behind the /var -> /private/var symlink, and $PWD is the real path.
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix=self.root_prefix))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.nvm = os.path.join(self.tmp, "nvm")
         self.shims = os.path.join(self.tmp, "shims")
         self.project = os.path.join(self.tmp, "project")
@@ -53,6 +55,14 @@ class ShimTestCase(unittest.TestCase):
             [os.path.join(self.shims, tool), *args],
             cwd=cwd or self.project, env=full_env,
             capture_output=True, text=True, timeout=30,
+        )
+
+    def assertNotInstalled(self, result, spec):
+        self.assertEqual(result.returncode, 127)
+        self.assertEqual(
+            result.stderr.strip(),
+            "nvm-shims: node %s from %s is not installed: nvm install %s (NVM_DIR=%s)"
+            % (spec, os.path.join(self.project, ".nvmrc"), spec, self.nvm),
         )
 
     def assertRuns(self, result, expected):
@@ -113,9 +123,7 @@ class NvmrcTest(ShimTestCase):
 
     def test_dotdot_spec_rejected(self):
         self.nvmrc("../../versions/node/v22.23.2\n")
-        result = self.run_shim()
-        self.assertEqual(result.returncode, 127)
-        self.assertTrue(result.stderr.startswith("nvm-shims: "), result.stderr)
+        self.assertNotInstalled(self.run_shim(), "../../versions/node/v22.23.2")
 
     def test_key_value_lines_are_skipped(self):
         self.nvmrc("foo=bar\n22\n")
@@ -145,6 +153,12 @@ class VersionMatchTest(ShimTestCase):
         self.install("v20.9.3", "v20.10.0")
         self.nvmrc("20.9\n")
         self.assertRuns(self.run_shim(), "node v20.9.3")
+
+    def test_leading_zero_component_is_decimal(self):
+        # 08 is not valid octal: a naive printf '%d' prints an error and reads it as 0, so v20.7.0 would win.
+        self.install("v20.7.0", "v20.08.0")
+        self.nvmrc("20\n")
+        self.assertRuns(self.run_shim(), "node v20.08.0")
 
     def test_prefix_does_not_match_longer_major(self):
         self.install("v2.0.0", "v20.1.0")
@@ -177,9 +191,21 @@ class AliasTest(ShimTestCase):
         self.alias("a", "b")
         self.alias("b", "a")
         self.nvmrc("a\n")
-        result = self.run_shim()
-        self.assertEqual(result.returncode, 127)
-        self.assertTrue(result.stderr.startswith("nvm-shims: "), result.stderr)
+        self.assertNotInstalled(self.run_shim(), "a")
+
+    def alias_chain(self, hops):
+        # a1 -> a2 -> ... -> a<hops> -> 20: that is `hops` alias files followed.
+        for i in range(1, hops + 1):
+            self.alias("a%d" % i, "a%d" % (i + 1) if i < hops else "20")
+        self.nvmrc("a1\n")
+
+    def test_five_alias_hops_resolve(self):
+        self.alias_chain(5)
+        self.assertRuns(self.run_shim(), "node v20.20.0")
+
+    def test_six_alias_hops_fail(self):
+        self.alias_chain(6)
+        self.assertNotInstalled(self.run_shim(), "a1")
 
     def test_no_default_alias(self):
         result = self.run_shim()
@@ -227,9 +253,6 @@ class ExecTest(ShimTestCase):
 
     def test_exit_code_passes_through(self):
         self.assertEqual(self.run_shim(env={"FAKE_RC": "3"}).returncode, 3)
-
-    def test_no_args(self):
-        self.assertRuns(self.run_shim(), "node v20.20.0")
 
     def write_env_node_npx(self):
         path = os.path.join(self.nvm, "versions", "node", "v20.20.0", "bin", "npx")
@@ -292,9 +315,7 @@ class NvmShFallbackTest(ShimTestCase):
 
     def test_nvm_answer_not_installed(self):
         self.nvmrc("gone\n")
-        result = self.run_shim()
-        self.assertEqual(result.returncode, 127)
-        self.assertTrue(result.stderr.startswith("nvm-shims: "), result.stderr)
+        self.assertNotInstalled(self.run_shim(), "gone")
 
 
 if __name__ == "__main__":

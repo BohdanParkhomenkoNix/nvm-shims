@@ -76,11 +76,49 @@ load-nvmrc() {
 }
 ```
 
+## `nvm current` shows `system`
+
+Optional. With a shim first on `PATH`, nvm's `nvm_ls_current` finds the shim and prints `system`, even
+after `nvm use 20`. Wrap it so that it answers from `$NVM_BIN` when a version is in use. Put this in your
+rc file **after** `nvm.sh` is sourced.
+
+zsh:
+
+```zsh
+functions -c nvm_ls_current _nvm_ls_current_orig
+nvm_ls_current() {
+  if [ -n "${NVM_BIN-}" ] && [ -x "$NVM_BIN/node" ]; then
+    print -r -- "${NVM_BIN:h:t}"
+  else
+    _nvm_ls_current_orig
+  fi
+}
+```
+
+bash (3.2 or newer; there is no `functions -c`, so the original is copied with `declare -f`):
+
+```bash
+eval "_nvm_ls_current_orig() $(declare -f nvm_ls_current | tail -n +2)"
+nvm_ls_current() {
+  local v
+  if [ -n "${NVM_BIN-}" ] && [ -x "$NVM_BIN/node" ]; then
+    v=${NVM_BIN%/bin}
+    printf '%s\n' "${v##*/}"
+  else
+    _nvm_ls_current_orig
+  fi
+}
+```
+
+After `nvm use 20`, `nvm current` prints `v20.20.0` instead of `system`. Without `$NVM_BIN` it falls back to
+nvm's own answer.
+
 ## Limitations
 
 - Only `node`, `npm` and `npx` are shimmed. Global packages (`pnpm`, `tsc`, …) live in a version's own
   `bin`, but their `#!/usr/bin/env node` line still goes through the shim.
-- `nvm current` and `nvm ls` show `system` while a shim is first on `PATH`.
+- `nvm current` and `nvm ls` show `system` while a shim is first on `PATH`. The section above fixes
+  `nvm current`.
 - macOS and Linux, bash 3.2 or newer. No Windows.
 
 ## Alternatives

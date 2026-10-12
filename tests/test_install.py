@@ -13,12 +13,14 @@ FAKE_TOOL = '#!/bin/sh\necho "{tool} {version} $*"\n'
 
 class InstallTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="nvm-shims-test-")
+        # realpath: install.sh prints physical paths, and the temp dir sits behind /var -> /private/var on macOS.
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="nvm-shims-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.dir = os.path.join(self.tmp, "home", ".local", "bin")
 
-    def run_install(self, *args, path="/usr/bin:/bin"):
+    def run_install(self, *args, path="/usr/bin:/bin", cwd=None):
         env = {"PATH": path, "HOME": os.path.join(self.tmp, "home")}
-        return subprocess.run([INSTALL, *args], env=env, capture_output=True, text=True, timeout=30)
+        return subprocess.run([INSTALL, *args], env=env, cwd=cwd, capture_output=True, text=True, timeout=30)
 
     def assertLinked(self):
         for tool in TOOLS:
@@ -98,6 +100,37 @@ class InstallTest(unittest.TestCase):
         result = self.run_install()
         self.assertIn("NOTE: %s is not on PATH; add it to PATH, after nvm is loaded" % self.dir, result.stdout)
         self.assertNotIn("comes before", result.stdout)
+
+    def test_trailing_slash_dir_is_normalised(self):
+        result = self.run_install(self.dir + "/", path=self.dir + ":/usr/bin:/bin")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLinked()
+        self.assertIn("linked %s/node -> %s/bin/node" % (self.dir, REPO), result.stdout)
+        self.assertIn("OK: %s/node is the first node on PATH" % self.dir, result.stdout)
+        self.assertNotIn("NOTE", result.stdout)
+
+    def test_relative_dir_is_made_absolute(self):
+        result = self.run_install(os.path.join("home", ".local", "bin"), path=self.dir + ":/usr/bin:/bin",
+                                  cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLinked()
+        self.assertIn("linked %s/node -> %s/bin/node" % (self.dir, REPO), result.stdout)
+        self.assertIn("OK: %s/node is the first node on PATH" % self.dir, result.stdout)
+        self.assertNotIn("NOTE", result.stdout)
+
+    def test_directory_in_place_of_a_tool_stops_install(self):
+        os.makedirs(os.path.join(self.dir, "npx"))
+        keep = os.path.join(self.dir, "npx", "keep")
+        with open(keep, "w") as f:
+            f.write("keep me\n")
+        result = self.run_install()
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stderr.startswith("nvm-shims: "), result.stderr)
+        self.assertIn(os.path.join(self.dir, "npx"), result.stderr)
+        self.assertTrue(os.path.isdir(os.path.join(self.dir, "npx")))
+        self.assertFalse(os.path.islink(os.path.join(self.dir, "npx")))
+        self.assertEqual(os.listdir(os.path.join(self.dir, "npx")), ["keep"])
+        self.assertEqual(sorted(os.listdir(self.dir)), ["npx"])
 
     def test_dir_matches_whole_path_entries_only(self):
         result = self.run_install(path=self.dir + "-x:/usr/bin:/bin")

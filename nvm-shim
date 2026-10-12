@@ -60,7 +60,8 @@ highest() {
         *) continue ;;
       esac
     fi
-    key=$(printf '%06d%06d%06d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+    # 10#: a leading zero (v20.08.0) must not be read as octal.
+    key=$(printf '%06d%06d%06d' "$((10#${BASH_REMATCH[1]}))" "$((10#${BASH_REMATCH[2]}))" "$((10#${BASH_REMATCH[3]}))")
     if [[ $key > $best_key ]]; then
       best=$name
       best_key=$key
@@ -87,7 +88,7 @@ from_nvm() {
   printf '%s\n' "$v"
 }
 
-# nvm version spec -> installed directory name (vX.Y.Z). Alias files are followed, at most 5 hops.
+# nvm version spec -> installed directory name (vX.Y.Z). Alias files are followed, at most 5 hops (5 alias files in a chain).
 resolve() {
   local spec=$1 hops=${2:-0} target
   [ "$hops" -le 5 ] || return 1

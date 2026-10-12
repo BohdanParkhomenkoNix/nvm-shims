@@ -25,6 +25,8 @@ for tool in node npm npx; do
 done
 
 mkdir -p "$dir"
+# An absolute physical path, so a trailing slash or a relative DIR does not break the PATH check below.
+dir=$(cd "$dir" && pwd -P)
 for tool in node npm npx; do
   ln -sfn "$repo/bin/$tool" "$dir/$tool"
   echo "linked $dir/$tool -> $repo/bin/$tool"
